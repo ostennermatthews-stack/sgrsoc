@@ -1,0 +1,59 @@
+name: Build and Publish APAC-MENA RSS
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 * * * *"   # hourly
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install feedparser feedgen
+
+      - name: Build Singapore RSOC feed
+        run: |
+          mkdir -p public
+          echo "ok" > public/index.html
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          homepage="https://${owner}.github.io/${repo}/"
+          python apac_mena_monitor.py \
+            --output public/singapore-rsoc.xml \
+            --title "Singapore RSOC News Monitor" \
+            --homepage "$homepage" \
+            --max-items 300
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
