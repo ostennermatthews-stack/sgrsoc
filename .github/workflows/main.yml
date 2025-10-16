@@ -41,6 +41,10 @@ jobs:
             --title "Singapore RSOC News Monitor" \
             --homepage "$homepage" \
             --max-items 300
+          echo "Contents of /public:" >> "$GITHUB_STEP_SUMMARY"
+          ls -lah public >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Feed URL: ${homepage}singapore-rsoc.xml" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-pages-artifact@v3
         with:
