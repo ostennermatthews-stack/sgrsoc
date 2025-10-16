@@ -3,14 +3,15 @@
 Singapore RSOC News Monitor — APAC & MENA security-focused RSS (EN-only + OPML ingest)
 
 - Aggregates curated English RSS sources for Asia-Pacific + Middle East/North Africa
-- ALSO ingests English-language feeds from OPML lists (India, Japan, Australia)
+- Ingests English-language feeds from OPML lists (India, Japan, Australia)
 - High-signal gate only (protests/strikes/violence/terror/hard-transport/cyber/hazards)
 - Strict APAC/MENA geographic gating; watchlist cities/hubs boosted
+- Straits Times feeds included
 - Clean public titles (no scores/tiers in output)
 """
 
 from __future__ import annotations
-import argparse, hashlib, html, re, time, os, xml.etree.ElementTree as ET, urllib.request
+import argparse, hashlib, html, os, re, time, xml.etree.ElementTree as ET, urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -90,6 +91,10 @@ NEWS_FEEDS_BASE = [
     "https://www.arabnews.com/rss",
     "https://www.qna.org.qa/en/RSS-Feeds",
 
+    # The Straits Times (EN)
+    "https://www.straitstimes.com/news/singapore/rss.xml",
+    "https://www.straitstimes.com/news/asia/rss.xml",
+
     # Global desks (EN) — must pass regional gate:
     "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
     "https://feeds.nbcnews.com/nbcnews/public/news",
@@ -111,6 +116,8 @@ EN_ALLOW_DOMAINS: Set[str] = {
     # Australia (EN)
     "abc.net.au", "smh.com.au", "theage.com.au", "brisbanetimes.com.au", "canberratimes.com.au",
     "perthnow.com.au", "theaustralian.com.au", "theguardian.com", "news.com.au",
+    # Singapore
+    "straitstimes.com",
 }
 NON_EN_HINTS = (
     "hindi","urdu","bangla","bengali","tamil","telugu","marathi","malayalam",
@@ -177,17 +184,41 @@ def collect_opml_feeds(urls: List[str]) -> List[str]:
     return list(uniq.keys())
 
 # ------------------------------
-# Filters & scoring (internal)
+# Filters & scoring (named groups)
 # ------------------------------
-EXCLUDE_PATTERNS = [
+SPORTS_PATTERNS = [
     r"\b(sport|sports|football|soccer|rugby|tennis|golf|cricket|formula\s?1|f1|motogp|basketball|nba|hockey|nhl|baseball|mlb|boxing|mma|ufc|marathon|olympics?)\b",
+]
+SPORTS_META_PATTERNS = [
     r"\b(match|fixture|league|cup|championship|qualifier|play[- ]?off|transfer|goal|line[- ]?up|result|scoreline|standings)\b",
-    r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|movie|film|tv series|theatre|theater|music|gaming|review|trailer|box office)\b",
+]
+ENTERTAINMENT_PATTERNS = [
+    r"\b(entertainment|celebrity|royal family|fashion|lifestyle|culture|arts|movie|film|tv series|theatre|theater|music|gaming|trailer|box office)\b",
+]
+BOOKS_PRIZES_PATTERNS = [
+    r"\b(novel|book|memoir|author|poet|literary|shortlist|longlist|prize|award)\b",
+]
+OBITUARY_PATTERNS = [
+    r"\b(obituary|dies at|dead at|passes away|cause of death)\b",
+]
+FEATURE_PATTERNS = [
     r"^(opinion|op\-ed|editorial|analysis|explainer|who is|profile):",
+    r"\b(feature|long read|special report|what to know|what we know|as it happened|live blog)\b",
+]
+FINANCE_PATTERNS = [
     r"\b(stocks?|shares?|indices|index|bonds?|yields?|currenc(?:y|ies)|forex|fx|commodit(?:y|ies)|earnings|quarterly|ipo|dividend|dow jones|nasdaq|s&?p\s*500|nikkei|hang seng|sensex)\b",
 ]
+GOV_PROC_PATTERNS = [
+    r"\b(supreme court|high court|bench|petition|pil|ordinance|quota|reservation|by[- ]?election|ward|municipal|panchayat|local body polls?)\b",
+]
+HR_DISCIPLINE_PATTERNS = [
+    r"\b(appointment|appointed|takes charge|assumes office|sworn in|inaugurated|oath)\b",
+    r"\b(franchisee|consumer affairs|ombudsman|advertising standards|competition regulator|accc|asic)\b",
+    r"\b(constable suspended|officer suspended|cop suspended)\b",
+]
+
 SECURITY_EXCEPTIONS = [
-    r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police|arrest|detained)\b",
+    r"\b(sanction|export control|embargo|asset freeze|seizure|raid|police\b|arrest|detained)\b",
     r"\b(curfew|state of emergency|martial law|evacuation|evacuated)\b",
     r"\b(airspace closed|airport closed|border closed|blockade|roadblock)\b",
     r"\b(strike|walkout|protest|demonstration|riot|unrest|clashes)\b",
@@ -203,6 +234,7 @@ CYBER    = [r"ransomware|data breach|ddos|phishing|malware|cyber attack|hack(?!n
 TRANS_HARD = [r"airport closed|airspace closed|runway closed|rail suspended|service suspended|port closed|all lanes closed|carriageway closed|road closed|blocked|drone.*(airport|airspace)"]
 HAZARDS  = [r"flood|flash flood|earthquake|aftershock|landslide|wildfire|storm|typhoon|tornado|heatwave|snow|ice|avalanche|wind|gale|tsunami"]
 
+# Region allow / block
 APAC_MENA_ALLOW = [
     r"\b(India|New Delhi|Delhi|Mumbai|Bengaluru|Bangalore|Kolkata|Chennai|Sri Lanka|Bangladesh|Nepal|Bhutan|Maldives|Pakistan)\b",
     r"\b(Singapore|Malaysia|Indonesia|Philippines|Thailand|Vietnam|Cambodia|Laos|Myanmar|Brunei|Timor[- ]?Leste)\b",
@@ -212,7 +244,10 @@ APAC_MENA_ALLOW = [
     r"\b(Egypt|Cairo|Libya|Tunisia|Algeria|Morocco)\b",
 ]
 NON_TARGET_STRONG = [
-    r"\b(United States|USA|US|American|Canada|Canadian|Mexico|Brazil|Argentina|Chile|Peru|Colombia)\b",
+    # Americas (expanded)
+    r"\b(United States|USA|US|American|Canada|Canadian|Mexico)\b",
+    r"\b(Argentina|Bolivia|Brazil|Chile|Colombia|Costa Rica|Cuba|Dominican Republic|Ecuador|El Salvador|Guatemala|Haiti|Honduras|Jamaica|Nicaragua|Panama|Paraguay|Peru|Uruguay|Venezuela)\b",
+    # Europe (non-MENA)
     r"\b(UK|United Kingdom|England|Scotland|Wales|Northern Ireland|Ireland|France|Germany|Netherlands|Belgium|Luxembourg|Denmark|Norway|Sweden|Finland|Iceland|Poland|Czech|Slovakia|Hungary|Romania|Bulgaria|Greece|Italy|Spain|Portugal|Ukraine|Estonia|Latvia|Lithuania|Serbia|Bosnia|Croatia|Slovenia|Albania|Kosovo|Moldova)\b",
 ]
 ALLOW_TLDS = (
@@ -228,27 +263,42 @@ ALLOW_DOMAINS = (
     "nhk.or.jp","japantimes.co.jp","abc.net.au","thehindu.com","indianexpress.com",
     "channelnewsasia.com","wam.ae","arabnews.com","qna.org.qa",
     "aljazeera.com","dw.com","bbc.co.uk","bbc.com","france24.com",
+    "straitstimes.com",
 )
 
+# Thresholds (tightened gate)
 P1_THRESHOLD, P2_THRESHOLD, P3_THRESHOLD = 80, 50, 30
-MIN_SCORE_TO_INCLUDE = 25
+MIN_SCORE_TO_INCLUDE = 35  # was 25; tightened to reduce routine/low-signal items
 
+# ------------------------------
+# Compile helpers
+# ------------------------------
 def _compile(patterns: Iterable[str]) -> List[re.Pattern]:
     return [re.compile(p, re.I) for p in patterns]
 
-EXCL_RE           = _compile(EXCLUDE_PATTERNS)
-SEC_EXC_RE        = _compile(SECURITY_EXCEPTIONS)
-VIOLENCE_RE       = _compile(VIOLENCE)
-TERROR_RE         = _compile(TERROR)
-CASUALTY_RE       = _compile(CASUALTY)
-PROTESTS_RE       = _compile(PROTESTS)
-CYBER_RE          = _compile(CYBER)
-TRANS_HARD_RE     = _compile(TRANS_HARD)
-HAZARDS_RE        = _compile(HAZARDS)
-WATCHLIST_RE      = _compile(WATCHLIST)
-WATCHLIST_HUBS_RE = _compile(WATCHLIST_HUBS)
-ALLOW_RE          = _compile(APAC_MENA_ALLOW)
-NON_TARGET_RE     = _compile(NON_TARGET_STRONG)
+SPORTS_RE           = _compile(SPORTS_PATTERNS)
+SPORTS_META_RE      = _compile(SPORTS_META_PATTERNS)
+ENTERTAINMENT_RE    = _compile(ENTERTAINMENT_PATTERNS)
+BOOKS_PRIZES_RE     = _compile(BOOKS_PRIZES_PATTERNS)
+OBITUARY_RE         = _compile(OBITUARY_PATTERNS)
+FEATURE_RE          = _compile(FEATURE_PATTERNS)
+FINANCE_RE          = _compile(FINANCE_PATTERNS)
+GOV_PROC_RE         = _compile(GOV_PROC_PATTERNS)
+HR_DISCIPLINE_RE    = _compile(HR_DISCIPLINE_PATTERNS)
+SEC_EXC_RE          = _compile(SECURITY_EXCEPTIONS)
+
+VIOLENCE_RE         = _compile(VIOLENCE)
+TERROR_RE           = _compile(TERROR)
+CASUALTY_RE         = _compile(CASUALTY)
+PROTESTS_RE         = _compile(PROTESTS)
+CYBER_RE            = _compile(CYBER)
+TRANS_HARD_RE       = _compile(TRANS_HARD)
+HAZARDS_RE          = _compile(HAZARDS)
+
+WATCHLIST_RE        = _compile(WATCHLIST)
+WATCHLIST_HUBS_RE   = _compile(WATCHLIST_HUBS)
+ALLOW_RE            = _compile(APAC_MENA_ALLOW)
+NON_TARGET_RE       = _compile(NON_TARGET_STRONG)
 
 def now_ts() -> float: return time.time()
 
@@ -265,20 +315,50 @@ def normalize_title(s: str) -> str:
     s = re.sub(r"\b(report|video|live|analysis|opinion)\b", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
+def _any(patterns: List[re.Pattern], text: str) -> bool:
+    return any(rx.search(text) for rx in patterns)
+
 def is_noise(text: str) -> bool:
     t = (text or "").lower()
-    if any(rx.search(t) for rx in EXCL_RE): return True
-    # market chatter only, unless overridden by security exceptions
-    if re.search(EXCLUDE_PATTERNS[-1], t, re.I) and not any(rx.search(t) for rx in SEC_EXC_RE):
+
+    # Sports (all)
+    if _any(SPORTS_RE, t) or _any(SPORTS_META_RE, t):
         return True
+
+    # Entertainment / culture & books/prizes
+    if _any(ENTERTAINMENT_RE, t) or _any(BOOKS_PRIZES_RE, t):
+        return True
+
+    # Obituaries allowed only if clearly violent/terror/casualty
+    if _any(OBITUARY_RE, t) and not (_any(VIOLENCE_RE, t) or _any(TERROR_RE, t) or _any(CASUALTY_RE, t)):
+        return True
+
+    # Features / evergreen
+    if _any(FEATURE_RE, t):
+        return True
+
+    # Pure finance or governance process — only allow if security exceptions present
+    if (_any(FINANCE_RE, t) or _any(GOV_PROC_RE, t)) and not _any(SEC_EXC_RE, t):
+        return True
+
+    # Routine HR/discipline/regulatory small-bore
+    if _any(HR_DISCIPLINE_RE, t):
+        # but don't block transport-service "suspended" items
+        if "suspended" in t and re.search(r"\b(service|rail|train|metro|flight|airport|runway)\b", t):
+            return False
+        return True
+
     return False
 
 def is_region_relevant(text: str, link: str = "") -> bool:
     t = text or ""
-    if any(rx.search(t) for rx in NON_TARGET_RE) and not any(rx.search(t) for rx in (ALLOW_RE + WATCHLIST_RE + WATCHLIST_HUBS_RE)):
+    # If it clearly mentions out-of-scope regions AND not our allow tokens ⇒ drop
+    if _any(NON_TARGET_RE, t) and not (_any(ALLOW_RE, t) or _any(WATCHLIST_RE + WATCHLIST_HUBS_RE, t)):
         return False
-    if any(rx.search(t) for rx in (ALLOW_RE + WATCHLIST_RE + WATCHLIST_HUBS_RE)):
+    # Allow if explicit APAC/MENA or watchlist/hub present
+    if _any(ALLOW_RE, t) or _any(WATCHLIST_RE + WATCHLIST_HUBS_RE, t):
         return True
+    # Domain/TLD heuristics
     try:
         host = urlparse(link).netloc.lower()
         if any(host.endswith(tld) for tld in ALLOW_TLDS): return True
@@ -289,7 +369,7 @@ def is_region_relevant(text: str, link: str = "") -> bool:
 
 def is_high_signal(text: str) -> bool:
     t = (text or "").lower()
-    return any(rx.search(t) for rx in (VIOLENCE_RE + TERROR_RE + CASUALTY_RE + PROTESTS_RE + TRANS_HARD_RE + CYBER_RE + HAZARDS_RE))
+    return _any(VIOLENCE_RE + TERROR_RE + CASUALTY_RE + PROTESTS_RE + TRANS_HARD_RE + CYBER_RE + HAZARDS_RE, t)
 
 @dataclass
 class Item:
@@ -312,23 +392,23 @@ def pub_ts(entry) -> float:
 def score_item(text: str, published_ts: float, source_name: str = "") -> int:
     t = text.lower()
     s = 0
-    if any(rx.search(t) for rx in TERROR_RE):   s += 90
-    if any(rx.search(t) for rx in VIOLENCE_RE): s += 85
-    if any(rx.search(t) for rx in CASUALTY_RE): s += 35
-    if any(rx.search(t) for rx in PROTESTS_RE): s += 55
-    if any(rx.search(t) for rx in TRANS_HARD_RE): s += 70
-    if any(rx.search(t) for rx in CYBER_RE):    s += 50
-    if any(rx.search(t) for rx in HAZARDS_RE):  s += 35
-    if any(rx.search(t) for rx in (WATCHLIST_RE + WATCHLIST_HUBS_RE)): s += 30
+    if _any(TERROR_RE, t):    s += 90
+    if _any(VIOLENCE_RE, t):  s += 85
+    if _any(CASUALTY_RE, t):  s += 35
+    if _any(PROTESTS_RE, t):  s += 55
+    if _any(TRANS_HARD_RE, t): s += 70
+    if _any(CYBER_RE, t):     s += 50
+    if _any(HAZARDS_RE, t):   s += 35
+    if _any(WATCHLIST_RE + WATCHLIST_HUBS_RE, t): s += 30
     s += recency_bonus(published_ts)
-    if source_name and re.search(r"BBC|FRANCE 24|DW|Al Jazeera|NHK|Japan Times|ABC News|The Hindu|Indian Express|WAM|Arab News|QNA", source_name, re.I):
+    if source_name and re.search(r"BBC|FRANCE 24|DW|Al Jazeera|NHK|Japan Times|ABC News|The Hindu|Indian Express|WAM|Arab News|QNA|Straits Times", source_name, re.I):
         s += 6
     return s
 
 def to_priority(score: int) -> int:
-    if score >= 80: return 1
-    if score >= 50: return 2
-    if score >= 30: return 3
+    if score >= P1_THRESHOLD: return 1
+    if score >= P2_THRESHOLD: return 2
+    if score >= P3_THRESHOLD: return 3
     return 0
 
 def harvest() -> List[Item]:
@@ -360,7 +440,7 @@ def harvest() -> List[Item]:
             ts = pub_ts(e)
             sc = score_item(text, ts, source_name)
             pr = to_priority(sc)
-            if pr == 0 or sc < 25: continue
+            if pr == 0 or sc < MIN_SCORE_TO_INCLUDE: continue
 
             items.append(Item(
                 title=html.unescape(title),
